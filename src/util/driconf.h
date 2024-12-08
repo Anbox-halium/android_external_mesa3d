@@ -657,6 +657,10 @@
    DRI_CONF_OPT_B(radv_disable_dcc, def, \
                   "Disable DCC for color images")
 
+#define DRI_CONF_RADV_DISABLE_DCC_MIPS(def) \
+   DRI_CONF_OPT_B(radv_disable_dcc_mips, def, \
+                  "Disable DCC for color images with mips")
+
 #define DRI_CONF_RADV_DISABLE_ANISO_SINGLE_LEVEL(def) \
   DRI_CONF_OPT_B(radv_disable_aniso_single_level, def, \
                  "Disable anisotropic filtering for single level images")
@@ -675,7 +679,7 @@
 
 #define DRI_CONF_RADV_DGC(def) \
    DRI_CONF_OPT_B(radv_dgc, def, \
-                  "Expose an experimental implementation of VK_NV_device_generated_commands")
+                  "Expose an experimental implementation of VK_NV_device_generated_commands on GFX8+")
 
 #define DRI_CONF_RADV_FLUSH_BEFORE_QUERY_COPY(def) \
   DRI_CONF_OPT_B( \

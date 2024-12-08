@@ -583,8 +583,10 @@ nir_lower_mediump_vars(nir_shader *shader, nir_variable_mode modes)
                nir_variable *var = nir_deref_instr_get_variable(deref);
 
                /* If we have atomic derefs that we can't track, then don't lower any mediump.  */
-               if (!var)
+               if (!var) {
+                  ralloc_free(no_lower_set);
                   return false;
+               }
 
                _mesa_set_add(no_lower_set, var);
                break;
@@ -994,9 +996,11 @@ opt_16bit_tex_srcs(nir_builder *b, nir_tex_instr *tex,
       /* Zero-extension (u16) and sign-extension (i16) have
        * the same behavior here - txf returns 0 if bit 15 is set
        * because it's out of bounds and the higher bits don't
-       * matter.
+       * matter. With the exception of a texel buffer, which could
+       * be arbitrary large.
        */
-      if (!can_opt_16bit_src(src->ssa, src_type, false))
+      bool sext_matters = tex->sampler_dim == GLSL_SAMPLER_DIM_BUF;
+      if (!can_opt_16bit_src(src->ssa, src_type, sext_matters))
          return false;
 
       opt_srcs |= (1 << i);

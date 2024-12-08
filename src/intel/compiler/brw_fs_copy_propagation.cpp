@@ -825,9 +825,8 @@ try_copy_propagate(const brw_compiler *compiler, fs_inst *inst,
     * destination of the copy, and simply replacing the sources would give a
     * program with different semantics.
     */
-   if ((brw_type_size_bits(entry->dst.type) < brw_type_size_bits(inst->src[arg].type) ||
-        entry->is_partial_write) &&
-       inst->opcode != BRW_OPCODE_MOV) {
+   if (brw_type_size_bits(entry->dst.type) < brw_type_size_bits(inst->src[arg].type) ||
+       (entry->is_partial_write && inst->opcode != BRW_OPCODE_MOV)) {
       return false;
    }
 
@@ -1505,8 +1504,7 @@ try_copy_propagate_def(const brw_compiler *compiler,
     * destination of the copy, and simply replacing the sources would give a
     * program with different semantics.
     */
-   if (inst->opcode != BRW_OPCODE_MOV &&
-       brw_type_size_bits(def->dst.type) <
+   if (brw_type_size_bits(def->dst.type) <
        brw_type_size_bits(inst->src[arg].type))
       return false;
 
@@ -1845,8 +1843,17 @@ brw_fs_opt_copy_propagation_defs(fs_visitor &s)
          if (source_progress) {
             instruction_progress = true;
             ++uses_deleted[def->dst.nr];
-            if (defs.get_use_count(def->dst) == uses_deleted[def->dst.nr])
+
+            /* We can copy propagate through an instruction like
+             *
+             *    mov.nz.f0.0(8) %2:D, -%78:D
+             *
+             * but deleting the instruction may alter the program.
+             */
+            if (def->conditional_mod == BRW_CONDITIONAL_NONE &&
+                defs.get_use_count(def->dst) == uses_deleted[def->dst.nr]) {
                def->remove(defs.get_block(def->dst), true);
+            }
          }
       }
 

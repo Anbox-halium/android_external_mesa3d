@@ -1281,7 +1281,8 @@ optimizations.extend([
    # negative.
    (('bcsel', ('ilt', a, 0), ('ineg', ('ishr', a, b)), ('ishr', a, b)),
     ('iabs', ('ishr', a, b))),
-   (('iabs', ('ishr', ('iabs', a), b)), ('ishr', ('iabs', a), b)),
+   (('iabs', ('ishr', ('iabs', a), b)), ('ushr', ('iabs', a), b)),
+   (('iabs', ('ushr', ('iabs', a), b)), ('ushr', ('iabs', a), b)),
 
    (('fabs', ('slt', a, b)), ('slt', a, b)),
    (('fabs', ('sge', a, b)), ('sge', a, b)),
@@ -1486,7 +1487,9 @@ optimizations.extend([
    (('ior', ('ishl', 'b@32', 24), ('ushr', a, 8)), ('shfr', b, a, 8), 'options->has_shfr32'),
    (('ior', ('ishl', 'b@32', 16), ('extract_u16', a, 1)), ('shfr', b, a, 16), 'options->has_shfr32'),
    (('ior', ('ishl', 'b@32', 8), ('extract_u8', a, 3)), ('shfr', b, a, 24), 'options->has_shfr32'),
-   (('ior', ('ishl', 'b@32', ('iadd', 32, ('ineg', c))), ('ushr@32', a, c)), ('shfr', b, a, c), 'options->has_shfr32'),
+   (('bcsel', ('ieq', c, 0), a, ('ior', ('ishl', 'b@32', ('iadd', 32, ('ineg', c))), ('ushr@32', a, c))), ('shfr', b, a, c), 'options->has_shfr32'),
+   (('bcsel', ('ine', c, 0), ('ior', ('ishl', 'b@32', ('iadd', 32, ('ineg', c))), ('ushr@32', a, c)), a), ('shfr', b, a, c), 'options->has_shfr32'),
+   (('ior', ('ishl', 'a@32', ('iadd', 32, ('ineg', b))), ('ushr@32', a, b)), ('shfr', a, a, b), 'options->has_shfr32 && !options->has_rotate32'),
 
    # bfi(X, a, b) = (b & ~X) | (a & X)
    # If X = ~0: (b & 0) | (a & 0xffffffff) = a
@@ -1894,8 +1897,11 @@ optimizations.extend([
     ('iadd', ('u2u32', a), ('u2u32', b))),
 
    # Lowered pack followed by lowered unpack, for the high bits
-   (('u2u32', ('ushr', ('ior', ('ishl', a, 32), ('u2u64', b)), 32)), ('u2u32', a)),
-   (('u2u16', ('ushr', ('ior', ('ishl', a, 16), ('u2u32', b)), 16)), ('u2u16', a)),
+   (('u2u32', ('ushr', ('ior', ('ishl', a, 32), ('u2u64', 'b@8')), 32)), ('u2u32', a)),
+   (('u2u32', ('ushr', ('ior', ('ishl', a, 32), ('u2u64', 'b@16')), 32)), ('u2u32', a)),
+   (('u2u32', ('ushr', ('ior', ('ishl', a, 32), ('u2u64', 'b@32')), 32)), ('u2u32', a)),
+   (('u2u16', ('ushr', ('ior', ('ishl', a, 16), ('u2u32', 'b@8')), 16)), ('u2u16', a)),
+   (('u2u16', ('ushr', ('ior', ('ishl', a, 16), ('u2u32', 'b@16')), 16)), ('u2u16', a)),
 ])
 
 # After the ('extract_u8', a, 0) pattern, above, triggers, there will be

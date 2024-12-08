@@ -622,6 +622,12 @@ radv_cmd_buffer_annotate(struct radv_cmd_buffer *cmd_buffer, const char *annotat
    device->ws->cs_annotate(cmd_buffer->cs, annotation);
 }
 
+#define RADV_TASK_SHADER_SENSITIVE_STAGES (\
+      VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT |\
+      VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT |\
+      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT |\
+      VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT)
+
 static void
 radv_gang_barrier(struct radv_cmd_buffer *cmd_buffer, VkPipelineStageFlags2 src_stage_mask,
                   VkPipelineStageFlags2 dst_stage_mask)
@@ -631,8 +637,8 @@ radv_gang_barrier(struct radv_cmd_buffer *cmd_buffer, VkPipelineStageFlags2 src_
       cmd_buffer->state.flush_bits & RADV_CMD_FLUSH_ALL_COMPUTE & ~RADV_CMD_FLAG_CS_PARTIAL_FLUSH;
 
    /* Add stage flush only when necessary. */
-   if (src_stage_mask & (VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT |
-                         VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT |
+   if (src_stage_mask & (VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT |
+                         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT | RADV_TASK_SHADER_SENSITIVE_STAGES |
                          VK_PIPELINE_STAGE_2_COMMAND_PREPROCESS_BIT_NV))
       cmd_buffer->gang.flush_bits |= RADV_CMD_FLAG_CS_PARTIAL_FLUSH;
 
@@ -644,7 +650,7 @@ radv_gang_barrier(struct radv_cmd_buffer *cmd_buffer, VkPipelineStageFlags2 src_
 
    /* Increment the GFX/ACE semaphore when task shaders are blocked. */
    if (dst_stage_mask & (VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT |
-                         VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT))
+                         RADV_TASK_SHADER_SENSITIVE_STAGES))
       cmd_buffer->gang.sem.leader_value++;
 }
 
@@ -7779,13 +7785,12 @@ radv_EndCommandBuffer(VkCommandBuffer commandBuffer)
        */
       cmd_buffer->state.flush_bits |= cmd_buffer->active_query_flush_bits;
 
-      /* Flush noncoherent images on GFX9+ so we can assume they're clean on the start of a
+      /* Flush noncoherent images when needed so we can assume they're clean on the start of a
        * command buffer.
        */
       if (cmd_buffer->state.rb_noncoherent_dirty && !can_skip_buffer_l2_flushes(device))
-         cmd_buffer->state.flush_bits |= radv_src_access_flush(
-            cmd_buffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, NULL);
+         cmd_buffer->state.flush_bits |= radv_src_access_flush(cmd_buffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                                               VK_ACCESS_2_TRANSFER_WRITE_BIT, NULL);
 
       /* Since NGG streamout uses GDS, we need to make GDS idle when
        * we leave the IB, otherwise another process might overwrite
@@ -10751,7 +10756,7 @@ radv_emit_all_graphics_states(struct radv_cmd_buffer *cmd_buffer, const struct r
        (cmd_buffer->state.dirty_dynamic & (RADV_DYNAMIC_RASTERIZATION_SAMPLES | RADV_DYNAMIC_PRIMITIVE_TOPOLOGY)))
       radv_flush_occlusion_query_state(cmd_buffer);
 
-   if (((cmd_buffer->state.dirty & RADV_CMD_DIRTY_PIPELINE) ||
+   if (((cmd_buffer->state.dirty & (RADV_CMD_DIRTY_PIPELINE | RADV_CMD_DIRTY_GRAPHICS_SHADERS)) ||
         (cmd_buffer->state.dirty_dynamic &
          (RADV_DYNAMIC_CULL_MODE | RADV_DYNAMIC_FRONT_FACE | RADV_DYNAMIC_RASTERIZER_DISCARD_ENABLE |
           RADV_DYNAMIC_VIEWPORT | RADV_DYNAMIC_CONSERVATIVE_RAST_MODE | RADV_DYNAMIC_RASTERIZATION_SAMPLES |
@@ -10872,6 +10877,8 @@ radv_bind_graphics_shaders(struct radv_cmd_buffer *cmd_buffer)
    }
 
    cmd_buffer->state.last_vgt_shader = cmd_buffer->state.shaders[last_vgt_api_stage];
+
+   cmd_buffer->state.has_nggc = cmd_buffer->state.last_vgt_shader->info.has_ngg_culling;
 
    struct radv_shader *gs_copy_shader = cmd_buffer->state.shader_objs[MESA_SHADER_GEOMETRY]
                                            ? cmd_buffer->state.shader_objs[MESA_SHADER_GEOMETRY]->gs.copy_shader
@@ -11453,7 +11460,7 @@ radv_CmdPreprocessGeneratedCommandsNV(VkCommandBuffer commandBuffer,
    const bool old_predicating = cmd_buffer->state.predicating;
    cmd_buffer->state.predicating = false;
 
-   radv_prepare_dgc(cmd_buffer, pGeneratedCommandsInfo, false);
+   radv_prepare_dgc(cmd_buffer, pGeneratedCommandsInfo, old_predicating);
 
    /* Restore conditional rendering. */
    cmd_buffer->state.predicating = old_predicating;
@@ -12755,6 +12762,7 @@ radv_barrier(struct radv_cmd_buffer *cmd_buffer, uint32_t dep_count, const VkDep
    enum radv_cmd_flush_bits dst_flush_bits = 0;
    VkPipelineStageFlags2 src_stage_mask = 0;
    VkPipelineStageFlags2 dst_stage_mask = 0;
+   bool has_image_transitions = false;
 
    if (cmd_buffer->state.render.active)
       radv_mark_noncoherent_rb(cmd_buffer);
@@ -12789,20 +12797,14 @@ radv_barrier(struct radv_cmd_buffer *cmd_buffer, uint32_t dep_count, const VkDep
          dst_stage_mask |= barrier->dstStageMask;
          dst_flush_bits |= radv_dst_access_flush(cmd_buffer, barrier->dstStageMask, barrier->dstAccessMask, image);
       }
+
+      has_image_transitions |= dep_info->imageMemoryBarrierCount > 0;
    }
 
-   /* The Vulkan spec 1.1.98 says:
-    *
-    * "An execution dependency with only
-    *  VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT in the destination stage mask
-    *  will only prevent that stage from executing in subsequently
-    *  submitted commands. As this stage does not perform any actual
-    *  execution, this is not observable - in effect, it does not delay
-    *  processing of subsequent commands. Similarly an execution dependency
-    *  with only VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT in the source stage mask
-    *  will effectively not wait for any prior commands to complete."
+   /* Only optimize BOTTOM_OF_PIPE as dst when there is no image layout transitions because it might
+    * need to synchronize.
     */
-   if (dst_stage_mask != VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT)
+   if (has_image_transitions || dst_stage_mask != VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT)
       radv_stage_flush(cmd_buffer, src_stage_mask);
    cmd_buffer->state.flush_bits |= src_flush_bits;
 
@@ -13670,7 +13672,6 @@ radv_reset_pipeline_state(struct radv_cmd_buffer *cmd_buffer, VkPipelineBindPoin
 
          cmd_buffer->state.gs_copy_shader = NULL;
          cmd_buffer->state.last_vgt_shader = NULL;
-         cmd_buffer->state.has_nggc = false;
          cmd_buffer->state.emitted_vs_prolog = NULL;
          cmd_buffer->state.spi_shader_col_format = 0;
          cmd_buffer->state.cb_shader_mask = 0;

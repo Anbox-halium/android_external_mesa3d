@@ -469,7 +469,7 @@ gpu_supports_texture_format(struct etna_screen *screen, uint32_t fmt,
 
    /* Requires split sampler support, which the driver doesn't support, yet. */
    if (!util_format_is_compressed(format) &&
-       util_format_get_blocksizebits(format) > 32)
+       util_format_get_blocksizebits(format) > 64)
       return false;
 
    if (fmt == TEXTURE_FORMAT_ETC1)
@@ -515,7 +515,7 @@ gpu_supports_render_format(struct etna_screen *screen, enum pipe_format format,
       return false;
 
    /* Requires split target support, which the driver doesn't support, yet. */
-   if (util_format_get_blocksizebits(format) > 32)
+   if (util_format_get_blocksizebits(format) > 64)
       return false;
 
    if (sample_count > 1) {
@@ -1102,7 +1102,7 @@ etna_screen_create(struct etna_device *dev, struct etna_gpu *gpu,
       goto fail;
    }
 
-   if (gpu != npu) {
+   if (npu && gpu != npu) {
       screen->pipe_nn = etna_pipe_new(npu, ETNA_PIPE_3D);
       if (!screen->pipe_nn) {
          DBG("could not create nn pipe");
